@@ -141,7 +141,7 @@ make package
 
 ## Distribution
 
-For the in-house four-variant IPA release flow, AltStore/SideStore/Feather source generation, and the meaning of the “No Extensions” builds, see [DISTRIBUTION.md](DISTRIBUTION.md).
+For the in-house four-variant IPA release flow, AltStore Classic/SideStore/Feather source generation, and the meaning of the “No Extensions” builds, see [DISTRIBUTION.md](DISTRIBUTION.md). Apollo-Reborn is intended for AltStore Classic, not AltStore PAL.
 
 ## Build
 

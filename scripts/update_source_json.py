@@ -86,6 +86,7 @@ def build_version_entry(
     release: dict[str, Any],
     prefix: str | None,
     variant_name: str | None,
+    build_version: str | None,
 ) -> dict[str, Any] | None:
     parsed = parse_release_tag(release.get("tag_name", ""))
     if not parsed:
@@ -97,13 +98,15 @@ def build_version_entry(
 
     apollo_version, tweak_version = parsed
     return {
-        # Keep `version` as the Apollo CFBundleShortVersionString so AltStore's
-        # update check matches the installed bundle. `buildVersion` and
-        # `marketingVersion` carry the (incrementing) tweak version, which makes
-        # each release a distinct, readable entry -- this is what restores
-        # Feather's version history and stops "1.15.11" repeating everywhere.
+        # AltStore's VerifyAppOperation rejects an install when `version` does not
+        # equal the IPA's CFBundleShortVersionString, and (when present) when
+        # `buildVersion` does not equal its CFBundleVersion. Apollo's bundle is
+        # frozen, so both must mirror the IPA exactly: `version` is Apollo's
+        # 1.15.11 and `buildVersion` is its CFBundleVersion (from config). The
+        # incrementing tweak version surfaces via `marketingVersion`, which is
+        # display-only and is what clients show on the store page.
         "version": apollo_version,
-        "buildVersion": tweak_version,
+        "buildVersion": build_version,
         "marketingVersion": tweak_version,
         "date": release.get("published_at"),
         "localizedDescription": format_release_notes(release.get("body", ""), variant_name),
@@ -235,10 +238,10 @@ def update_source_json(
     data = load_existing_json(output_path)
     data.update(config["source"])
     data.update(variant["source"])
-    # Feature the app on the source's About page. An explicit empty list would
-    # suppress it; the AltStore schema otherwise defaults to the first app.
-    bundle_id = config["app"].get("bundleIdentifier")
-    data["featuredApps"] = [bundle_id] if bundle_id else data.get("featuredApps", [])
+    # Feature the app on the source's About page. bundleIdentifier is required in
+    # config, so we always override any stale featuredApps carried over from a
+    # previously generated source file.
+    data["featuredApps"] = [config["app"]["bundleIdentifier"]]
     if "apps" not in data or not data["apps"]:
         data["apps"] = [{}]
 
@@ -246,7 +249,8 @@ def update_source_json(
     app.update(config["app"])
     app.update(variant["app"])
 
-    seen: set[tuple[str, str]] = set()
+    build_version = config["app"].get("buildVersion")
+    seen: set[tuple[str, str | None]] = set()
     versions: list[dict[str, Any]] = []
     news: list[dict[str, Any]] = []
 
@@ -256,14 +260,20 @@ def update_source_json(
     )
 
     for release in reversed(sorted_releases):
-        entry = build_version_entry(release, variant["prefix"], variant.get("notesLabel"))
+        entry = build_version_entry(
+            release, variant["prefix"], variant.get("notesLabel"), build_version
+        )
         if not entry:
             continue
+        # Apollo's bundle is frozen, so every tweak release shares the same
+        # (version, buildVersion). AltStore requires version entries to be
+        # distinct on that pair, so we list only the newest installable build
+        # here (releases are iterated newest-first). The full per-release
+        # changelog lives in `news` below, which is keyed on the release tag.
         key = (entry["version"], entry["buildVersion"])
-        if key in seen:
-            continue
-        seen.add(key)
-        versions.append(entry)
+        if key not in seen:
+            seen.add(key)
+            versions.append(entry)
         news.append(build_news_entry(release, config, variant.get("newsLabel")))
 
     app["versions"] = versions
@@ -271,6 +281,7 @@ def update_source_json(
         latest = versions[0]
         app["version"] = latest["version"]
         app["buildVersion"] = latest["buildVersion"]
+        app["marketingVersion"] = latest["marketingVersion"]
         app["versionDate"] = latest["date"]
         app["versionDescription"] = latest["localizedDescription"]
         app["downloadURL"] = latest["downloadURL"]

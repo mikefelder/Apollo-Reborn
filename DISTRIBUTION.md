@@ -20,7 +20,7 @@ Apollo ships with six `.appex` bundles in addition to the main app:
 - `NotificationServiceExtension.appex`
 - `OpenInUIExtension.appex`
 
-Keeping them intact uses 7 App IDs total on free Apple IDs: 1 for the main app plus 6 for the extensions above. Removing them leaves only the main app, so AltStore/SideStore only need 1 App ID for Apollo itself. AltStore documents the underlying limit here: <https://faq.altstore.io/altstore-classic/app-ids>.
+Keeping them intact uses 7 App IDs total on free Apple IDs: 1 for the main app plus 6 for the extensions above. Removing them leaves only the main app, so AltStore Classic/SideStore only need 1 App ID for Apollo itself. AltStore documents the underlying limit here: <https://faq.altstore.io/altstore-classic/app-ids>.
 
 ## Local Build Flow
 
@@ -89,9 +89,11 @@ These two paths never double-run: a release created by the build workflow's own
 for `draft: false`. `publish-sources.yml` can also be dispatched manually to
 rebuild the sources on demand.
 
-## AltStore Source Setup
+## AltStore Classic Source Setup
 
 AltStore Classic sources are plain JSON files. Official schema: <https://faq.altstore.io/developers/make-a-source>.
+
+Apollo-Reborn is supported in AltStore Classic, SideStore, and Feather. It is not compatible with AltStore PAL.
 
 This repo now includes four source files:
 
@@ -150,9 +152,19 @@ https://raw.githubusercontent.com/Apollo-Reborn/Apollo-Reborn/main/apps_glass.js
 https://raw.githubusercontent.com/Apollo-Reborn/Apollo-Reborn/main/apps_noext_glass.json
 ```
 
+Useful add-source link format for AltStore Classic:
+
+```text
+altstore-classic://source?url=https://raw.githubusercontent.com/Apollo-Reborn/Apollo-Reborn/main/apps.json
+```
+
+Repeat with the other JSON URLs for the other variants.
+
+AltStore PAL should not be used here. The JSON format is compatible, but Apollo-Reborn depends on the classic sideload flow.
+
 ## SideStore Setup
 
-SideStore is compatible with AltStore sources: <https://docs.sidestore.io/docs/advanced/app-sources>.
+SideStore is compatible with AltStore Classic sources: <https://docs.sidestore.io/docs/advanced/app-sources>.
 
 That means the same four JSON files work unchanged in SideStore.
 
@@ -184,7 +196,7 @@ For the least moving parts:
 
 1. Keep IPA assets in GitHub Releases for this repo
 2. Keep `apps*.json` in the repo root
-3. Point users at the raw GitHub URLs or wrap them in add-source links for AltStore/SideStore/Feather
+3. Point users at the raw GitHub URLs or wrap them in add-source links for AltStore Classic/SideStore/Feather
 
 That reproduces Balackburn’s distribution model, but with the Liquid Glass asset catalog and icon pipeline owned by this repo instead of living out-of-band.
 
