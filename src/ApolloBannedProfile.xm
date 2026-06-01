@@ -132,6 +132,29 @@ static NSString *ApolloBannedProfileUsernameFromModelObject(id object) {
     return nil;
 }
 
+// Currently logged-in account username, or nil. Used to avoid blocking the
+// user's own profile when their account is temporarily banned.
+static NSString *ApolloBannedProfileCurrentLoggedInUsername(void) {
+    Class clientClass = objc_getClass("RDKClient");
+    SEL sharedClientSEL = @selector(sharedClient);
+    if (!clientClass || ![clientClass respondsToSelector:sharedClientSEL]) return nil;
+
+    id client = ((id (*)(id, SEL))objc_msgSend)(clientClass, sharedClientSEL);
+    if (!client) return nil;
+
+    SEL currentUserSEL = @selector(currentUser);
+    if (![client respondsToSelector:currentUserSEL]) return nil;
+
+    id currentUser = ((id (*)(id, SEL))objc_msgSend)(client, currentUserSEL);
+    return ApolloBannedProfileUsernameFromModelObject(currentUser);
+}
+
+static BOOL ApolloBannedProfileIsCurrentLoggedInUser(NSString *username) {
+    NSString *current = ApolloBannedProfileCurrentLoggedInUsername();
+    if (current.length == 0) return NO;
+    return ApolloBannedProfileUsernamesMatch(current, username);
+}
+
 static NSString *ApolloBannedProfileUsernameFromViewControllerDirect(UIViewController *viewController) {
     if (!viewController) return nil;
 
@@ -589,6 +612,9 @@ NSString *ApolloBannedProfileMessageForUsername(NSString *username) {
 BOOL ApolloBannedProfileCachedIsSuspended(NSString *username) {
     NSString *key = ApolloBannedProfileNormalizedUsername(username);
     if (key.length == 0) return NO;
+    // Never treat the logged-in user's own account as banned; a temporary
+    // suspension must not lock them out of their own profile.
+    if (ApolloBannedProfileIsCurrentLoggedInUser(key)) return NO;
     if ([sListEndpoint403Usernames containsObject:key.lowercaseString]) return YES;
     return [[ApolloUserProfileCache sharedCache] cachedIsSuspendedForUsername:key];
 }
@@ -611,6 +637,12 @@ void ApolloBannedProfileNoteListEndpoint403ForURL(NSURL *url) {
         if (![parts[i] isEqualToString:@"user"]) continue;
         NSString *username = ApolloBannedProfileNormalizedUsername(parts[i + 1]);
         if (username.length == 0) return;
+        // A 403 on the own account's listing is transient (auth/temp ban),
+        // not a permanent suspension; don't poison the cache.
+        if (ApolloBannedProfileIsCurrentLoggedInUser(username)) {
+            ApolloLog(@"[BannedProfile] ignoring list endpoint 403 for own account u/%@", username);
+            return;
+        }
         if (!sListEndpoint403Usernames) sListEndpoint403Usernames = [NSMutableSet set];
         [sListEndpoint403Usernames addObject:username.lowercaseString];
         ApolloLog(@"[BannedProfile] list endpoint 403 for u/%@", username);
@@ -677,6 +709,14 @@ static void ApolloBannedProfileEvaluateViewController(UIViewController *viewCont
         return;
     }
 
+    // Never block the logged-in user's own profile, even if suspended; clear
+    // any stale overlay installed before the account resolved.
+    if (ApolloBannedProfileIsCurrentLoggedInUser(username)) {
+        ApolloLog(@"[BannedProfile] skipping overlay for own account u/%@", username);
+        ApolloBannedProfileApplySuspendedState(viewController, NO, username);
+        return;
+    }
+
     if (ApolloBannedProfileCachedIsSuspended(username)) {
         ApolloBannedProfileApplySuspendedState(viewController, YES, username);
         return;
@@ -690,6 +730,7 @@ static void ApolloBannedProfileEvaluateViewController(UIViewController *viewCont
         if (!strongViewController) return;
         NSString *currentUsername = ApolloBannedProfileUsernameFromViewController(strongViewController);
         if (!ApolloBannedProfileUsernamesMatch(currentUsername, username)) return;
+        if (ApolloBannedProfileIsCurrentLoggedInUser(username)) return;
         BOOL suspended = info.isSuspended || ApolloBannedProfileCachedIsSuspended(username);
         ApolloBannedProfileApplySuspendedState(strongViewController, suspended, username);
     }];
