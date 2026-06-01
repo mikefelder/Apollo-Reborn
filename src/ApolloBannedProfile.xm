@@ -650,6 +650,15 @@ void ApolloBannedProfileNoteListEndpoint403ForURL(NSURL *url) {
     }
 }
 
+void ApolloBannedProfileClearListEndpoint403ForUsername(NSString *username) {
+    NSString *key = ApolloBannedProfileNormalizedUsername(username);
+    if (key.length == 0 || !sListEndpoint403Usernames) return;
+    NSString *lower = key.lowercaseString;
+    if (![sListEndpoint403Usernames containsObject:lower]) return;
+    [sListEndpoint403Usernames removeObject:lower];
+    ApolloLog(@"[BannedProfile] cleared list endpoint 403 for u/%@ (no longer suspended)", key);
+}
+
 static void ApolloBannedProfileRemoveOverlay(UIViewController *viewController) {
     UIView *overlay = objc_getAssociatedObject(viewController, kApolloBannedProfileOverlayKey);
     if (overlay) {
@@ -717,12 +726,10 @@ static void ApolloBannedProfileEvaluateViewController(UIViewController *viewCont
         return;
     }
 
-    if (ApolloBannedProfileCachedIsSuspended(username)) {
-        ApolloBannedProfileApplySuspendedState(viewController, YES, username);
-        return;
-    }
-
-    ApolloBannedProfileApplySuspendedState(viewController, NO, username);
+    // Show the cached overlay immediately if suspended, but still revalidate so
+    // a lifted ban clears the overlay instead of persisting for the cache TTL.
+    BOOL cachedSuspended = ApolloBannedProfileCachedIsSuspended(username);
+    ApolloBannedProfileApplySuspendedState(viewController, cachedSuspended, username);
 
     __weak UIViewController *weakViewController = viewController;
     [[ApolloUserProfileCache sharedCache] requestInfoForUsername:username completion:^(ApolloUserProfileInfo *info) {

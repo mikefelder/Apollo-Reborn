@@ -393,6 +393,10 @@ static UIImage *ApolloDecodedAvatarImage(UIImage *image) {
             if (info) {
                 if (info.isSuspended) {
                     [[ApolloLinkPreviewCache sharedCache] removePreviewsForRedditUsername:key];
+                } else {
+                    // Ban lifted: drop the transient 403 marker so the overlay
+                    // and inline banned hints clear on the next evaluation.
+                    ApolloBannedProfileClearListEndpoint403ForUsername(key);
                 }
                 [[NSNotificationCenter defaultCenter] postNotificationName:ApolloUserProfileInfoUpdatedNotification
                                                                     object:self
@@ -464,7 +468,10 @@ static UIImage *ApolloDecodedAvatarImage(UIImage *image) {
         if (info && completion) {
             dispatch_async(dispatch_get_main_queue(), ^{ completion(info); });
         }
-        if (info && [self isFreshInfo:info] && info.suspensionChecked) return;
+        // Always revalidate a cached suspension: a lifted temp ban must clear
+        // promptly instead of persisting for the full cache TTL. Non-suspended
+        // fresh entries still short-circuit and skip the network.
+        if (info && [self isFreshInfo:info] && info.suspensionChecked && !info.isSuspended) return;
 
         NSMutableArray<void (^)(ApolloUserProfileInfo *)> *callbacks = self.infoCompletions[key];
         if (callbacks) {
