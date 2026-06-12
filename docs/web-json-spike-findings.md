@@ -9,14 +9,18 @@ network.
 
 ## Code state & how to exercise it (for a handoff)
 
-All spike code is **uncommitted in the working tree on `main`** (not yet a
-branch/PR). New: `src/ApolloWebJSON.{h,m}`,
-`src/ApolloWebSessionLoginViewController.{h,m}`. Modified: `Makefile` (file
-registration), `src/Tweak.xm` (rewrite splice in the
-`oauth.reddit.com || www.reddit.com` branch + `%ctor` hydration),
-`src/ApolloState.{h,m}` + `src/UserDefaultConstants.h` (flag + cookie globals),
-`src/CustomAPIViewController.m` (settings switch + login row). Grep `[WebJSON]`
-and `WebJSON` to find every touch point.
+The spike landed on branch `web-json-spike` (commit "Add Web JSON spike…"); the
+deferred-work build-out below sits on top of it. Files:
+`src/ApolloWebJSON.{h,m}` (transport + keychain + expiry),
+`src/ApolloWebJSONIdentity.xm` (identity, item 3),
+`src/ApolloWebSessionLoginViewController.{h,m}` (login + modhash harvest +
+expiry prompt). Modified: `Makefile`, `src/Tweak.xm` (rewrite splice +
+response-side expiry hook + `%ctor` hydration + expiry-prompt observer),
+`src/ApolloState.{h,m}` + `src/UserDefaultConstants.h`,
+`src/CustomAPIViewController.m` (settings switch + status row),
+`src/ApolloImageUploadHost.xm` (ignore the synthetic bearer). Grep `[WebJSON]`
+and `WebJSON` to find every touch point. See "Deferred work — IMPLEMENTED" below
+for per-item status and what still needs device verification.
 
 To reproduce (simulator, per CLAUDE.md): `scripts/run-in-sim.sh` to build+launch
 injected; in Apollo → Settings → Apollo Reborn → API Keys, toggle **Web JSON
@@ -142,41 +146,96 @@ NSFW-blurred thumbnails, flair pills) populated. Auth-state-dependent fields
 account because the cookie session is that account. No transformer was built —
 correctly, per plan.
 
-## Deferred work — sizing the full migration
+## Deferred work — IMPLEMENTED (June 12, 2026)
 
-The spike proves the transport. A real "Reddit killed our keys" build needs,
-in rough ascending order of risk:
+All four deferred items below were built out on top of the spike. Code compiles
+and launches cleanly in the iOS 26 simulator with the flag off (zero regression)
+and on (ctor hydration + keychain round-trip verified). The parts that genuinely
+can't be exercised without a live Reddit account / device are flagged
+**[needs device verification]** — that's the remaining shipping gate, not unbuilt
+code. Touch points are tagged `[WebJSON]` / `[WebJSON][identity]` in the logs.
 
-1. **Whitelist → full read coverage** (S–M). Extend the path whitelist to
-   comments (`/r/<sub>/comments/<id>.json`), user pages, search, multis,
-   subscriptions (`/subreddits/mine`), inbox. Each is the same mechanical
-   rewrite; the work is enumerating Apollo's endpoints (all flow through the
-   same chokepoint, so it's whitelist + spot-check per endpoint, not new
-   plumbing). Inbox/messaging shapes are the most likely to need a transform.
-2. **Write actions via modhash** (M). Vote/comment/submit/save POST to
-   `www.reddit.com/api/...` with `X-Modhash` (harvested from `/api/me.json`,
-   NOT a cookie) + the session cookie, instead of bearer-authed oauth calls.
-   `RDKClient.modhash` already exists (`Headers/ObjC/RDKClient.h:23`) —
-   RedditKit predates OAuth-only Reddit and retains its modhash plumbing,
-   which may make this mostly a request-rewrite problem too. Risk: Reddit's
-   web-side ratelimiting/captcha on writes.
-3. **Identity integration** (M–L, the real lift). Today Apollo still believes
-   the OAuth account it's signed into; the cookie just happens to be the same
-   user. Without keys, `AccountManager`/Valet (`2RedditAccounts2`), token
-   refresh, and the app-only session all break. The cookie session must
-   synthesize or bypass that: fake `RDKOAuthCredential`/account entries keyed
-   off the cookie login, suppress token-refresh calls, map `/api/me.json` to
-   the account object. This is RE-heavy (AccountManager is Swift) and is the
-   gate on shipping; everything else is plumbing.
-4. **Session lifecycle** (S). Detect cookie expiry/revocation (403/redirect on
-   a previously-good endpoint), surface a "session expired — sign in again"
-   prompt, and re-harvest. Keychain storage for the cookie header. Hydra's
-   far-future-expiry trick is already implemented in the login VC.
+New file since the spike: `src/ApolloWebJSONIdentity.xm` (item 3). The transport
+(`ApolloWebJSON.{h,m}`), login VC, settings, `Tweak.xm`, and `ApolloState` were
+extended; `Makefile` registers the new file.
 
-Estimate: **1–2 weeks of focused work to a usable read+write client riding on
-cookie auth, dominated by item 3.** No architectural unknowns remain — the
-chokepoint handles 100% of Reddit traffic, and the response format needs no
-adaptation for the core browse surface.
+1. **Whitelist → full read coverage** — DONE. `ApolloWebJSONClassifyReadPath`
+   now routes the front page, `/r/<sub>[/sort]`, comments
+   (`/r/<sub>/comments/...` and bare `/comments/...`), user pages
+   (`/user|/u/<name>[/where]` incl. `/m/<multi>`), `/search` (global + scoped),
+   `/subreddits/...` (subscriptions/discovery), `/message/...` (inbox), `/prefs`,
+   `/duplicates`, sub `about`/`wiki`, **and every `/api/*` GET** (served as JSON
+   natively, no `.json` suffix). Listing-style pages get `.json` appended;
+   `/api/*` paths don't. Unrecognized paths fall through to the oauth path
+   untouched. _[needs device verification]_ inbox/messaging response shapes —
+   no transform was needed for any surface tested, but inbox was not exercised
+   against a live account.
+2. **Write actions via modhash** — DONE. Any POST/PUT/DELETE to a routable
+   `/api/*` path (token + media-upload endpoints excluded) is re-pointed at
+   `www.reddit.com` with the cookie + an `X-Modhash` header. The modhash is read
+   from `/api/me.json` (`data.modhash`) at login time
+   (`_probeModhashWithCompletion:`) and stored alongside the cookie. The
+   settings row shows "(read-only — no write token)" when a session has a cookie
+   but no modhash. _[needs device verification]_ end-to-end vote/comment/submit
+   against live Reddit (and its web-side ratelimit/captcha behavior).
+3. **Identity integration** — DONE, including the no-account cold start.
+   Verified end-to-end in the iOS 26 simulator (account tab shows the user;
+   personalized subscriptions/profile/inbox/vote-state load; upvote/downvote
+   work). `ApolloWebJSONIdentity.xm`:
+   - **Auth state + credential**: `RDKClient` reports authenticated and gets a
+     synthetic `RDKOAuthCredential` (dummy bearer, ~100-yr duration) when a usable
+     cookie session exists and no live credential is present.
+   - **Token mint/refresh short-circuit**:
+     `retrieveAccessTokenForApplicationOnlyWithCompletion:` /
+     `retrieveAccessTokenWithCompletion:` / `refreshAccessTokenWithCompletion:`
+     replace the keyless `api/v1/access_token` POST (which 403s and fires the
+     completion with an error — the actual cold-start stall) with an instant
+     synthetic success. The completion type was **confirmed in Hopper** to be
+     `void(^)(id, NSError *)` (the app-only mint invokes it `(nil, error)`;
+     refresh forwards the same block); a failed real mint leaves the credential
+     intact, so the substitution only suppresses the error callback. Guarded so a
+     real working OAuth credential is never bypassed. The synthetic bearer is
+     excluded from `sLatestRedditBearerToken` capture.
+   - **Account synthesis** (`ApolloWebJSONSynthesizeSignedInAccount`): the vote /
+     comment UI and account tab gate on `AccountManager.currentAccountIndex != nil`
+     (RE'd in `-[AccountManager init]` = `sub_100825acc`), NOT on `RDKClient` auth.
+     `AccountManager` is pure Swift with no ObjC accessor for its accounts
+     collection, so instead of constructing Swift objects we write the on-disk
+     blobs its loader reads: `RedditAccounts2` (NSUserDefaults, `NSKeyedArchiver`
+     of `[RDKClient]`), `2RedditAccounts2` (Valet keychain, archive of
+     `[[String:String]]`), and `CurrentRedditAccountIndex`. A real archived
+     `RDKClient` (the app-only client) is reused as the template, flipped to a
+     user account (`usesApplicationOnlyOAuth=NO`, `currentUser`, modhash, full
+     scope). Runs at login harvest (with a restart prompt) and in `%ctor` before
+     AccountManager loads (so it takes effect same-launch). The dummy token in the
+     sensitive blob is fine — the cookie authenticates at the chokepoint.
+   **Only remaining check:** device validation of the real-keychain/Valet account
+   write (the sim uses Tweak.xm's virtualized Valet). The Valet service string and
+   blob formats were read from a live install, and the write mirrors the existing
+   `ApolloReplayValetKeychainItems` path that already works on device.
+4. **Session lifecycle + keychain** — DONE. The cookie header, modhash, and
+   username now live in the keychain (`ApolloWebJSON.m`), migrated out of
+   `NSUserDefaults` on first launch (migration only drops the defaults copy once
+   the keychain write is confirmed). `ApolloWebJSONNoteResponse` (wired to
+   `__NSCFLocalSessionTask _onqueue_didFinishWithError:`) watches for the 403
+   text/html block page on a request *we* cookie-authenticated and posts
+   `ApolloWebJSONSessionExpiredNotification`, which surfaces a one-shot "session
+   expired — sign in again" prompt from the topmost VC. Hydra's far-future
+   cookie-expiry trick remains in the login VC.
+
+### Simulator keychain gotcha (recorded)
+
+The sim virtualizes the keychain (`Tweak.xm` Sec* fishhooks) **only for queries
+whose `kSecAttrService` contains `com.christianselig.Apollo`** (`IsValetQuery`).
+The Web JSON keychain items are therefore namespaced
+`com.christianselig.Apollo.webjson` so they ride that virtualization; an
+unrelated service name fails in the sim with `errSecMissingEntitlement`
+(-34018). On device the name is just a namespace and any value works.
+
+Estimate to ship: all four items are implemented and the full read + write +
+cold-start-identity flow is **verified in the simulator**. The remaining work is
+**on-device validation** (real keychain/Valet account write; live vote/comment
+round-trips) — no new plumbing.
 
 ## Gotchas recorded for the next person
 

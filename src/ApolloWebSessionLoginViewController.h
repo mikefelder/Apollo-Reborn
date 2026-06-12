@@ -9,4 +9,11 @@
 //
 // Present wrapped in a UINavigationController.
 @interface ApolloWebSessionLoginViewController : UIViewController
+
+// Presents (from the topmost view controller) a one-shot "session expired"
+// alert offering to re-harvest the cookie, then launches this login flow. Wired
+// to ApolloWebJSONSessionExpiredNotification in Tweak.xm's %ctor so a revoked
+// cookie surfaces wherever the user is in the app, not just in Settings.
++ (void)presentExpiredSessionPrompt;
+
 @end

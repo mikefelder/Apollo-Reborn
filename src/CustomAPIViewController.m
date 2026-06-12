@@ -616,6 +616,12 @@ typedef NS_ENUM(NSInteger, Tag) {
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
     [self apollo_applyTheme];
+    // Refresh the Web Session Login status line after returning from the login
+    // flow (signed-in user / write-token availability may have just changed).
+    if (sWebJSONEnabled && [self.tableView numberOfRowsInSection:SectionAPIKeys] > 10) {
+        [self.tableView reloadRowsAtIndexPaths:@[[NSIndexPath indexPathForRow:10 inSection:SectionAPIKeys]]
+                              withRowAnimation:UITableViewRowAnimationNone];
+    }
 }
 
 - (void)viewWillDisappear:(BOOL)animated {
@@ -973,16 +979,26 @@ typedef NS_ENUM(NSInteger, Tag) {
         case 9:
             return [self switchCellWithIdentifier:@"Cell_API_WebJSON"
                                             label:@"Web JSON Mode (Experimental)"
-                                           detail:@"Read subreddit listings from www.reddit.com JSON with a web session cookie instead of the OAuth API."
+                                           detail:@"Drive Reddit through www.reddit.com JSON with a web session cookie instead of the OAuth API — reads, votes/comments/saves, and (best-effort) signed-in state without API keys."
                                                on:sWebJSONEnabled
                                            action:@selector(webJSONSwitchToggled:)];
         case 10: {
+            // Subtitle style so we can surface the harvested account / status.
             UITableViewCell *cell = [self.tableView dequeueReusableCellWithIdentifier:@"Cell_API_WebSessionLogin"];
             if (!cell) {
-                cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"Cell_API_WebSessionLogin"];
+                cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"Cell_API_WebSessionLogin"];
                 cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+                cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
             }
             cell.textLabel.text = @"Web Session Login (Experimental)";
+            if (sWebSessionCookieHeader.length > 0) {
+                cell.detailTextLabel.text = sWebSessionUsername.length > 0
+                    ? [NSString stringWithFormat:@"Signed in as u/%@%@", sWebSessionUsername,
+                       sWebSessionModhash.length > 0 ? @"" : @" (read-only — no write token)"]
+                    : @"Session active";
+            } else {
+                cell.detailTextLabel.text = @"Not signed in — tap to harvest a cookie";
+            }
             return cell;
         }
         default:

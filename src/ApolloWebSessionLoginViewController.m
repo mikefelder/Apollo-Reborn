@@ -1,6 +1,7 @@
 #import "ApolloWebSessionLoginViewController.h"
 #import "ApolloWebJSON.h"
 #import "ApolloCommon.h"
+#import "UIWindow+Apollo.h"
 
 #import <WebKit/WebKit.h>
 
@@ -32,6 +33,44 @@ static const NSTimeInterval kFarFutureCookieInterval = 10000.0 * 24 * 60 * 60;
 @end
 
 @implementation ApolloWebSessionLoginViewController
+
+#pragma mark - Expired-session re-auth entry point
+
++ (UIWindow *)_apolloKeyWindow {
+    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+        if (![scene isKindOfClass:[UIWindowScene class]]) continue;
+        for (UIWindow *w in ((UIWindowScene *)scene).windows) {
+            if (w.isKeyWindow) return w;
+        }
+    }
+    UIScene *anyScene = UIApplication.sharedApplication.connectedScenes.anyObject;
+    if ([anyScene isKindOfClass:[UIWindowScene class]]) {
+        return ((UIWindowScene *)anyScene).windows.firstObject;
+    }
+    return nil;
+}
+
++ (void)presentExpiredSessionPrompt {
+    UIViewController *top = [[self _apolloKeyWindow] visibleViewController];
+    if (!top) return;
+    // Already in the login flow (or some other modal we shouldn't interrupt).
+    if ([top isKindOfClass:[ApolloWebSessionLoginViewController class]]) return;
+
+    UIAlertController *alert = [UIAlertController
+        alertControllerWithTitle:@"Reddit Session Expired"
+                         message:@"Your Web JSON session is no longer valid (Reddit returned its sign-in wall). Sign in again to keep browsing without the OAuth API."
+                  preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Sign In Again"
+                                              style:UIAlertActionStyleDefault
+                                            handler:^(UIAlertAction *a) {
+        ApolloWebSessionLoginViewController *vc = [[ApolloWebSessionLoginViewController alloc] init];
+        UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
+        UIViewController *presenter = [[self _apolloKeyWindow] visibleViewController] ?: top;
+        [presenter presentViewController:nav animated:YES completion:nil];
+    }]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Later" style:UIAlertActionStyleCancel handler:nil]];
+    [top presentViewController:alert animated:YES completion:nil];
+}
 
 - (void)viewDidLoad {
     [super viewDidLoad];
@@ -114,6 +153,28 @@ static const NSTimeInterval kFarFutureCookieInterval = 10000.0 * 24 * 60 * 60;
         @"  if (!r.ok) return '';"
         @"  const j = await r.json();"
         @"  return (j && j.data && j.data.name) ? j.data.name : '';"
+        @"} catch (e) { return ''; }";
+    [self.webView callAsyncJavaScript:js
+                            arguments:nil
+                              inFrame:nil
+                       inContentWorld:WKContentWorld.pageWorld
+                    completionHandler:^(id result, NSError *error) {
+        completion([result isKindOfClass:[NSString class]] ? (NSString *)result : @"");
+    }];
+}
+
+// Reads the session modhash from /api/me.json (data.modhash). The modhash is
+// the web API's write token — required for vote/comment/save/submit — and is
+// NOT a cookie, so it must be pulled from the identity endpoint at harvest time.
+// Returns @"" when absent (some anonymous/limited sessions omit it).
+- (void)_probeModhashWithCompletion:(void (^)(NSString *modhash))completion {
+    if (!self.pageLoaded) { completion(@""); return; }
+    NSString *js =
+        @"try {"
+        @"  const r = await fetch('/api/me.json', {credentials: 'include'});"
+        @"  if (!r.ok) return '';"
+        @"  const j = await r.json();"
+        @"  return (j && j.data && j.data.modhash) ? j.data.modhash : '';"
         @"} catch (e) { return ''; }";
     [self.webView callAsyncJavaScript:js
                             arguments:nil
@@ -220,28 +281,41 @@ static const NSTimeInterval kFarFutureCookieInterval = 10000.0 * 24 * 60 * 60;
 
     WKHTTPCookieStore *cookieStore = self.webView.configuration.websiteDataStore.httpCookieStore;
     __weak typeof(self) weakSelf = self;
-    [cookieStore getAllCookies:^(NSArray<NSHTTPCookie *> *cookies) {
-        // Rewrite session cookies to a far-future expiry so the persistent data
-        // store keeps them across launches (instead of discarding on quit).
-        NSDate *farFuture = [NSDate dateWithTimeIntervalSinceNow:kFarFutureCookieInterval];
-        NSMutableArray<NSString *> *pairs = [NSMutableArray array];
-        for (NSHTTPCookie *cookie in cookies) {
-            if (![cookie.domain.lowercaseString hasSuffix:@"reddit.com"]) continue;
-            [pairs addObject:[NSString stringWithFormat:@"%@=%@", cookie.name, cookie.value]];
-            if (cookie.sessionOnly || !cookie.expiresDate) {
-                NSMutableDictionary *props = [cookie.properties mutableCopy];
-                [props removeObjectForKey:NSHTTPCookieDiscard];
-                [props removeObjectForKey:NSHTTPCookieMaximumAge];
-                props[NSHTTPCookieExpires] = farFuture;
-                NSHTTPCookie *persistent = [NSHTTPCookie cookieWithProperties:props];
-                if (persistent) [cookieStore setCookie:persistent completionHandler:nil];
+    // Pull the modhash before the cookie sweep so the write token lands with the
+    // same harvest (it can't be recovered from the cookies).
+    [self _probeModhashWithCompletion:^(NSString *modhash) {
+        typeof(self) s = weakSelf;
+        if (!s) return;
+        [cookieStore getAllCookies:^(NSArray<NSHTTPCookie *> *cookies) {
+            // Rewrite session cookies to a far-future expiry so the persistent
+            // data store keeps them across launches (instead of discarding on quit).
+            NSDate *farFuture = [NSDate dateWithTimeIntervalSinceNow:kFarFutureCookieInterval];
+            NSMutableArray<NSString *> *pairs = [NSMutableArray array];
+            for (NSHTTPCookie *cookie in cookies) {
+                if (![cookie.domain.lowercaseString hasSuffix:@"reddit.com"]) continue;
+                [pairs addObject:[NSString stringWithFormat:@"%@=%@", cookie.name, cookie.value]];
+                if (cookie.sessionOnly || !cookie.expiresDate) {
+                    NSMutableDictionary *props = [cookie.properties mutableCopy];
+                    [props removeObjectForKey:NSHTTPCookieDiscard];
+                    [props removeObjectForKey:NSHTTPCookieMaximumAge];
+                    props[NSHTTPCookieExpires] = farFuture;
+                    NSHTTPCookie *persistent = [NSHTTPCookie cookieWithProperties:props];
+                    if (persistent) [cookieStore setCookie:persistent completionHandler:nil];
+                }
             }
-        }
-        ApolloWebJSONSetSessionCookieHeader([pairs componentsJoinedByString:@"; "]);
-        ApolloLog(@"[WebJSON] Harvested session for u/%@, %lu cookies", username, (unsigned long)pairs.count);
-        // Deferred (write path): the modhash needed for vote/comment/submit is
-        // NOT a cookie — it would come from /api/me.json once writes are in scope.
-        [weakSelf _dismiss];
+            // Persist cookie + write token + identity together (all keychain-backed).
+            ApolloWebJSONSetSessionCookieHeader([pairs componentsJoinedByString:@"; "]);
+            ApolloWebJSONSetModhash(modhash);
+            ApolloWebJSONSetUsername(username);
+            ApolloLog(@"[WebJSON] Harvested session for u/%@, %lu cookies, modhash %@",
+                      username, (unsigned long)pairs.count, modhash.length > 0 ? @"captured" : @"absent");
+
+            // Synthesize a signed-in account so the account tab + write actions
+            // (vote/comment) work — they gate on AccountManager having a current
+            // account, which only loads at launch, so a restart is required.
+            BOOL synthesized = ApolloWebJSONSynthesizeSignedInAccount();
+            [s _finishWithUser:username accountSynthesized:synthesized];
+        }];
     }];
 }
 
@@ -288,6 +362,28 @@ static const NSTimeInterval kFarFutureCookieInterval = 10000.0 * 24 * 60 * 60;
     [self.authPollTimer invalidate];
     self.authPollTimer = nil;
     [self _dismiss];
+}
+
+// Called after a successful harvest. When an account was synthesized, Apollo must
+// relaunch for AccountManager to load it (it reads accounts once per launch), so
+// we prompt to restart — mirroring the settings-restore flow's exit(0). Otherwise
+// (account already present / synthesis skipped) just dismiss.
+- (void)_finishWithUser:(NSString *)username accountSynthesized:(BOOL)synthesized {
+    if (!synthesized) { [self _dismiss]; return; }
+
+    NSString *who = username.length > 0 ? [NSString stringWithFormat:@"u/%@", username] : @"your account";
+    UIAlertController *alert = [UIAlertController
+        alertControllerWithTitle:@"Signed In"
+                         message:[NSString stringWithFormat:
+                             @"Signed in as %@ via Web JSON. Apollo needs to restart to finish signing in (load the account, enable voting and commenting).", who]
+                  preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Restart Apollo"
+                                              style:UIAlertActionStyleDefault
+                                            handler:^(UIAlertAction *a) { exit(0); }]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Later"
+                                              style:UIAlertActionStyleCancel
+                                            handler:^(UIAlertAction *a) { [self _dismiss]; }]];
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 - (void)_dismiss {

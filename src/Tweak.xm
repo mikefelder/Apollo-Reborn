@@ -21,6 +21,7 @@
 #import "ApolloMarkdownToolbarGif.h"
 #import "ApolloWebAuthViewController.h"
 #import "ApolloWebJSON.h"
+#import "ApolloWebSessionLoginViewController.h"
 
 // MARK: - Sideload Fixes
 
@@ -1022,6 +1023,20 @@ static NSURLRequest *ApolloLocalFastFailRequest(NSString *path) {
     %orig;
 }
 
+// Response-side observation for Web JSON session-expiry detection. Every task's
+// completion passes through here; ApolloWebJSONNoteResponse only reacts when Web
+// JSON mode is on and a cookie-authed www.reddit.com request came back as
+// Reddit's 403 HTML block page (signalling the harvested cookie expired). It's a
+// cheap predicate when the flag is off, so this is safe on the hot path.
+- (void)_onqueue_didFinishWithError:(id)error {
+    if (sWebJSONEnabled) {
+        NSURLSessionTask *task = (NSURLSessionTask *)self;
+        NSURLRequest *finished = task.currentRequest ?: task.originalRequest;
+        ApolloWebJSONNoteResponse(finished, task.response);
+    }
+    %orig;
+}
+
 %end
 
 // Unlock "Artificial Superintelligence" Pixel Pal (normally requires Carrot Weather app installed)
@@ -1344,15 +1359,19 @@ static void initializeRandomSources() {
         sTranslationSkipLanguages = [clean copy];
     }
 
-    // Web JSON spike hydration (flag + harvested session cookie header).
+    // Web JSON: read the flag here, but defer the keychain-backed
+    // cookie/modhash/username hydration until AFTER the SecItem fishhooks are
+    // installed below — in the simulator the keychain is virtualized by those
+    // hooks, so reading before they're in place returns nothing.
     sWebJSONEnabled = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyWebJSONEnabled];
-    {
-        NSString *cookieHeader = (NSString *)[[NSUserDefaults standardUserDefaults] objectForKey:UDKeyWebSessionCookieHeader];
-        sWebSessionCookieHeader = [cookieHeader isKindOfClass:[NSString class]] && cookieHeader.length > 0 ? [cookieHeader copy] : nil;
-    }
-    if (sWebJSONEnabled) {
-        ApolloLog(@"[WebJSON] enabled at launch, session cookie %@", sWebSessionCookieHeader ? @"present" : @"absent");
-    }
+    // Surface a revoked/expired cookie (detected response-side in
+    // ApolloWebJSONNoteResponse) as a re-login prompt wherever the user is.
+    [[NSNotificationCenter defaultCenter] addObserverForName:ApolloWebJSONSessionExpiredNotification
+                                                      object:nil
+                                                       queue:[NSOperationQueue mainQueue]
+                                                  usingBlock:^(NSNotification *note) {
+        [ApolloWebSessionLoginViewController presentExpiredSessionPrompt];
+    }];
 
     // Tag filter feature hydration.
     sTagFilterEnabled = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyTagFilterEnabled];
@@ -1474,8 +1493,30 @@ static void initializeRandomSources() {
 
     initializeRandomSources();
 
-    // Redirect user to Custom API settings if no API credentials are set
-    if ([sRedditClientId length] == 0) {
+    // Web JSON keychain hydration — must run after the SecItem fishhooks above so
+    // the simulator's virtualized keychain is in place (see the deferral note
+    // where sWebJSONEnabled is read). Migrates any legacy NSUserDefaults cookie.
+    ApolloWebJSONLoadPersistedCredentials();
+    if (sWebJSONEnabled) {
+        ApolloLog(@"[WebJSON] enabled at launch, session cookie %@, modhash %@, user %@",
+                  sWebSessionCookieHeader ? @"present" : @"absent",
+                  sWebSessionModhash.length > 0 ? @"present" : @"absent",
+                  sWebSessionUsername ?: @"(none)");
+    }
+
+    // Cold-start identity: when a usable Web JSON session exists but no signed-in
+    // account is loaded, synthesize one now. This runs in %ctor (after the SecItem
+    // keychain hooks above) and therefore before AccountManager reads its accounts
+    // on this launch, so the account tab + write actions (vote/comment) work
+    // without an OAuth account. No-op when an account already exists.
+    if (ApolloWebJSONHasUsableSession()) {
+        @try { ApolloWebJSONSynthesizeSignedInAccount(); }
+        @catch (NSException *e) { ApolloLog(@"[WebJSON][identity] launch synthesis failed: %@", e); }
+    }
+
+    // Redirect user to Custom API settings if no API credentials are set — but not
+    // when a Web JSON cookie session is driving things (no API key is expected).
+    if ([sRedditClientId length] == 0 && !ApolloWebJSONHasUsableSession()) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             UIWindow *mainWindow = ((UIWindowScene *)UIApplication.sharedApplication.connectedScenes.anyObject).windows.firstObject;
             UITabBarController *tabBarController = (UITabBarController *)mainWindow.rootViewController;

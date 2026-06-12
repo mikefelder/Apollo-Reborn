@@ -13,6 +13,7 @@
 #import "ApolloMarkdownToolbarGif.h"
 #import "ApolloMediaMetadata.h"
 #import "ApolloState.h"
+#import "ApolloWebJSON.h"
 #import "Defaults.h"
 #import "fishhook.h"
 
@@ -270,6 +271,11 @@ void ApolloRedditCaptureBearerTokenFromAuthorization(NSString *authorization, NS
 
     NSString *token = [[authorization substringFromIndex:NSMaxRange(bearerRange)] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
     if (token.length == 0 || [token isEqualToString:sLatestRedditBearerToken]) return;
+    // The Web JSON identity layer installs a synthetic bearer so Apollo issues
+    // requests without real keys; it's a placeholder, not a usable oauth token,
+    // so don't let it overwrite a real captured token (the chokepoint replaces
+    // it with the cookie before it reaches Reddit anyway).
+    if ([token isEqualToString:ApolloWebJSONSyntheticBearerToken]) return;
 
     sLatestRedditBearerToken = [token copy];
     ApolloLog(@"[RedditUpload] Captured Reddit bearer token from %@", source ?: @"unknown source");
