@@ -20,6 +20,7 @@
 #import "Defaults.h"
 #import "ApolloMarkdownToolbarGif.h"
 #import "ApolloWebAuthViewController.h"
+#import "ApolloWebJSON.h"
 
 // MARK: - Sideload Fixes
 
@@ -964,6 +965,18 @@ static NSURLRequest *ApolloLocalFastFailRequest(NSString *path) {
             [self setValue:mutableRequest forKey:@"_currentRequest"];
         }
     } else if ([requestURL.host isEqualToString:@"oauth.reddit.com"] || [requestURL.host isEqualToString:@"www.reddit.com"]) {
+        // Web JSON spike: when the flag is on, whitelisted listing reads are
+        // re-pointed at cookie-authenticated www.reddit.com/...json instead of
+        // the oauth host (see ApolloWebJSON.m). Returns nil when off/not
+        // applicable, leaving the existing oauth behavior untouched.
+        NSURLRequest *webJSONRequest = ApolloWebJSONRewriteRequest(request);
+        if (webJSONRequest) {
+            [self setValue:webJSONRequest forKey:@"_originalRequest"];
+            [self setValue:webJSONRequest forKey:@"_currentRequest"];
+            %orig;
+            return;
+        }
+
         NSMutableURLRequest *mutableRequest = [request mutableCopy];
         NSString *customUA = [sUserAgent length] > 0 ? sUserAgent : defaultUserAgent;
         [mutableRequest setValue:customUA forHTTPHeaderField:@"User-Agent"];
@@ -1219,6 +1232,7 @@ static void initializeRandomSources() {
                                     UDKeyTagFilterNSFW: @YES,
                                     UDKeyTagFilterSpoiler: @YES,
                                     UDKeyTagFilterSubredditOverrides: @{},
+                                    UDKeyWebJSONEnabled: @NO,
                                     UDKeyNotificationBackendURL: @"",
                                     UDKeyNotificationBackendRegistrationToken: @"",
                                     UDKeyRedditClientSecret: @""};
@@ -1328,6 +1342,16 @@ static void initializeRandomSources() {
             }
         }
         sTranslationSkipLanguages = [clean copy];
+    }
+
+    // Web JSON spike hydration (flag + harvested session cookie header).
+    sWebJSONEnabled = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyWebJSONEnabled];
+    {
+        NSString *cookieHeader = (NSString *)[[NSUserDefaults standardUserDefaults] objectForKey:UDKeyWebSessionCookieHeader];
+        sWebSessionCookieHeader = [cookieHeader isKindOfClass:[NSString class]] && cookieHeader.length > 0 ? [cookieHeader copy] : nil;
+    }
+    if (sWebJSONEnabled) {
+        ApolloLog(@"[WebJSON] enabled at launch, session cookie %@", sWebSessionCookieHeader ? @"present" : @"absent");
     }
 
     // Tag filter feature hydration.

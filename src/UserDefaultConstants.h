@@ -78,6 +78,13 @@ static NSString *const UDKeyTagFilterSpoiler = @"TagFilterSpoiler";        // gl
 // Missing keys fall back to global settings.
 static NSString *const UDKeyTagFilterSubredditOverrides = @"TagFilterSubredditOverrides";
 
+// Web JSON spike (see ApolloWebJSON.m). Master switch for re-pointing
+// whitelisted listing reads at cookie-authenticated www.reddit.com JSON.
+static NSString *const UDKeyWebJSONEnabled = @"WebJSONEnabled";
+// Harvested "name=value; ..." Cookie header for www.reddit.com requests.
+// Spike-grade storage; a real build would use the keychain.
+static NSString *const UDKeyWebSessionCookieHeader = @"WebSessionCookieHeader";
+
 // Self-hosted notification backend (forked apollo-backend). Empty disables —
 // the legacy hosts remain in the blocklist and requests are silently dropped.
 static NSString *const UDKeyNotificationBackendURL = @"NotificationBackendURL";

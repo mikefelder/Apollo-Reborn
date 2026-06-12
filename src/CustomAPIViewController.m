@@ -1,6 +1,7 @@
 #import "CustomAPIViewController.h"
 #import "ApolloCommon.h"
 #import "ApolloNotificationBackend.h"
+#import "ApolloWebSessionLoginViewController.h"
 #import "ApolloState.h"
 #import "ApolloUserProfileCache.h"
 #import "ApolloLinkPreviewCache.h"
@@ -660,7 +661,9 @@ typedef NS_ENUM(NSInteger, Tag) {
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     switch (section) {
         case SectionBackupRestore: return 4;
-        case SectionAPIKeys: return 9; // 7 text fields + Can't sign in? + API key setup guide
+        // 7 text fields + Can't sign in? + API key setup guide + Web JSON switch
+        // (+ Web Session Login row, only while Web JSON mode is on)
+        case SectionAPIKeys: return sWebJSONEnabled ? 11 : 10;
         case SectionGeneral: return sShowDeletedComments ? 11 : 10;
         case SectionMedia: return 12 + (sEnableInlineImages ? 0 : -kApolloMediaInlineDependentRows);
         case SectionSubreddits: return sSubredditListEnhancements ? 8 : 7;
@@ -965,6 +968,21 @@ typedef NS_ENUM(NSInteger, Tag) {
                 cell.textLabel.numberOfLines = 0;
             }
             cell.textLabel.text = @"Giphy & ImgChest API Key Setup";
+            return cell;
+        }
+        case 9:
+            return [self switchCellWithIdentifier:@"Cell_API_WebJSON"
+                                            label:@"Web JSON Mode (Experimental)"
+                                           detail:@"Read subreddit listings from www.reddit.com JSON with a web session cookie instead of the OAuth API."
+                                               on:sWebJSONEnabled
+                                           action:@selector(webJSONSwitchToggled:)];
+        case 10: {
+            UITableViewCell *cell = [self.tableView dequeueReusableCellWithIdentifier:@"Cell_API_WebSessionLogin"];
+            if (!cell) {
+                cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"Cell_API_WebSessionLogin"];
+                cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+            }
+            cell.textLabel.text = @"Web Session Login (Experimental)";
             return cell;
         }
         default:
@@ -1540,6 +1558,8 @@ typedef NS_ENUM(NSInteger, Tag) {
             [self pushTroubleshootingViewController];
         } else if (indexPath.row == 8) {
             [self pushInstructionsViewController];
+        } else if (indexPath.row == 10) {
+            [self presentWebSessionLoginViewController];
         }
     } else if (indexPath.section == SectionAbout) {
         if (indexPath.row == 0) {
@@ -1608,7 +1628,7 @@ typedef NS_ENUM(NSInteger, Tag) {
 
 - (BOOL)tableView:(UITableView *)tableView shouldHighlightRowAtIndexPath:(NSIndexPath *)indexPath {
     if (indexPath.section == SectionBackupRestore) return YES;
-    if (indexPath.section == SectionAPIKeys && (indexPath.row == 7 || indexPath.row == 8)) return YES;
+    if (indexPath.section == SectionAPIKeys && (indexPath.row == 7 || indexPath.row == 8 || indexPath.row == 10)) return YES;
     if (indexPath.section == SectionMedia) {
         NSInteger row = ApolloMediaLogicalRow(indexPath.row);
         return (row == 0 || row == 1 || row == 2 || row == 5 || row == 6 || row == 7 || row == 8 || row == 9);
@@ -1898,6 +1918,27 @@ typedef NS_ENUM(NSInteger, Tag) {
 
 - (void)flexSwitchToggled:(UISwitch *)sender {
     [[NSUserDefaults standardUserDefaults] setBool:sender.isOn forKey:UDKeyEnableFLEX];
+}
+
+- (void)webJSONSwitchToggled:(UISwitch *)sender {
+    BOOL wasOn = sWebJSONEnabled;
+    sWebJSONEnabled = sender.isOn;
+    [[NSUserDefaults standardUserDefaults] setBool:sWebJSONEnabled forKey:UDKeyWebJSONEnabled];
+    if (sWebJSONEnabled == wasOn) return;
+
+    // The Web Session Login row (logical 10) only exists while the mode is on.
+    NSArray<NSIndexPath *> *loginPaths = @[[NSIndexPath indexPathForRow:10 inSection:SectionAPIKeys]];
+    if (sWebJSONEnabled) {
+        [self.tableView insertRowsAtIndexPaths:loginPaths withRowAnimation:UITableViewRowAnimationFade];
+    } else {
+        [self.tableView deleteRowsAtIndexPaths:loginPaths withRowAnimation:UITableViewRowAnimationFade];
+    }
+}
+
+- (void)presentWebSessionLoginViewController {
+    ApolloWebSessionLoginViewController *vc = [[ApolloWebSessionLoginViewController alloc] init];
+    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
+    [self presentViewController:nav animated:YES completion:nil];
 }
 
 - (void)flairColorsSwitchToggled:(UISwitch *)sender {

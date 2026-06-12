@@ -48,6 +48,9 @@ NSString *sLibreTranslateURL = nil;
 NSString *sLibreTranslateAPIKey = nil;
 NSArray<NSString *> *sTranslationSkipLanguages = nil;
 
+BOOL sWebJSONEnabled = NO;
+NSString *sWebSessionCookieHeader = nil;
+
 BOOL sTagFilterEnabled = NO;
 NSString *sTagFilterMode = @"blur";
 BOOL sTagFilterNSFW = YES;
