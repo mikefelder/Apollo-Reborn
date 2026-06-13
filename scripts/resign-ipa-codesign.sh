@@ -22,26 +22,33 @@ set -euo pipefail
 # Re-signing it again through Sideloadly/AltStore would undo this fix.
 
 usage() {
-    echo "Usage: $0 <input.ipa> <signing-identity> [--profile <p.mobileprovision>] [-o <output.ipa>]"
+    echo "Usage: $0 <input.ipa> <signing-identity> [--profile <p.mobileprovision> | --profile-dir <dir>] [-o <output.ipa>]"
     echo ""
-    echo "  <signing-identity>  e.g. \"Apple Development: you@example.com (ABCDE12345)\""
-    echo "                      list yours with: security find-identity -v -p codesigning"
-    echo "                      use \"-\" for an ad-hoc dry run (mechanics check only)."
-    echo "  --profile <file>    iOS App Development provisioning profile (your team + device);"
-    echo "                      a wildcard App ID (TEAMID.*) covers the app + all appexes."
-    echo "                      REQUIRED if the input IPA has no embedded.mobileprovision"
-    echo "                      (e.g. a Sideloadly export) — otherwise it won't install."
-    echo "  -o <output.ipa>     default: <input>-resigned.ipa"
+    echo "  <signing-identity>   e.g. \"Apple Development: you@example.com (ABCDE12345)\""
+    echo "                       list yours with: security find-identity -v -p codesigning"
+    echo "                       use \"-\" for an ad-hoc dry run (mechanics check only)."
+    echo "  --profile <file>     iOS App Development provisioning profile (your team + device);"
+    echo "                       a wildcard App ID (TEAMID.*) covers the app + all appexes."
+    echo "                       Use this when one profile fits the whole IPA."
+    echo "  --profile-dir <dir>  Directory containing one .mobileprovision per bundle (app + each"
+    echo "                       appex). Each bundle is matched to the profile whose"
+    echo "                       application-identifier equals TEAMID.<CFBundleIdentifier>."
+    echo "                       Use this when each appex has its own explicit App ID"
+    echo "                       (e.g. Push/Group capabilities differ per bundle)."
+    echo "                       One of --profile / --profile-dir is REQUIRED if the input IPA"
+    echo "                       has no embedded.mobileprovision (e.g. a Sideloadly export)."
+    echo "  -o <output.ipa>      default: <input>-resigned.ipa"
 }
 
 [[ $# -lt 2 || "${1:-}" == "-h" || "${1:-}" == "--help" ]] && { usage; [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]] && exit 0; exit 1; }
 
 IPA="$1"; IDENTITY="$2"; shift 2
-OUT=""; PROFILE=""
+OUT=""; PROFILE=""; PROFILE_DIR=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -o|--output) OUT="$2"; shift 2 ;;
         -p|--profile) PROFILE="$2"; shift 2 ;;
+        --profile-dir) PROFILE_DIR="$2"; shift 2 ;;
         *) echo "Unknown argument: $1"; usage; exit 1 ;;
     esac
 done
@@ -49,9 +56,17 @@ done
 # device-installable. Pass --profile <wildcard.mobileprovision> (an iOS App
 # Development profile for your team + device, ideally a wildcard App ID like
 # TEAMID.*) to embed it into the app + every appex and sign with its entitlements.
+# OR pass --profile-dir <dir> with one explicit-App-ID profile per bundle.
+if [[ -n "$PROFILE" && -n "$PROFILE_DIR" ]]; then
+    echo "Error: --profile and --profile-dir are mutually exclusive"; exit 1
+fi
 if [[ -n "$PROFILE" ]]; then
     [[ -f "$PROFILE" ]] || { echo "Error: profile not found: $PROFILE"; exit 1; }
     case "$PROFILE" in /*) : ;; *) PROFILE="$PWD/$PROFILE" ;; esac
+fi
+if [[ -n "$PROFILE_DIR" ]]; then
+    [[ -d "$PROFILE_DIR" ]] || { echo "Error: profile dir not found: $PROFILE_DIR"; exit 1; }
+    case "$PROFILE_DIR" in /*) : ;; *) PROFILE_DIR="$PWD/$PROFILE_DIR" ;; esac
 fi
 
 [[ -f "$IPA" ]] || { echo "Error: IPA not found: $IPA"; exit 1; }
@@ -117,11 +132,35 @@ while IFS= read -r fw; do
 done < <(find "$app" -type d -name "*.framework" | awk '{print length, $0}' | sort -rn | cut -d' ' -f2-)
 
 # Embed --profile (if given) into a bundle and return the profile path to use.
+# When --profile-dir is active, pick the profile whose application-identifier
+# equals TEAMID.<bundle's CFBundleIdentifier> (explicit App ID match) so each
+# appex (with its own Push/Group/etc. capabilities) gets the right one.
 profile_for() {  # profile_for <bundle-dir>  -> echoes profile path or empty
     local bundle="$1"
     if [[ -n "$PROFILE" ]]; then
         cp "$PROFILE" "$bundle/embedded.mobileprovision"
         printf '%s\n' "$bundle/embedded.mobileprovision"
+    elif [[ -n "$PROFILE_DIR" ]]; then
+        local bid match=""
+        bid="$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$bundle/Info.plist" 2>/dev/null || true)"
+        [[ -n "$bid" ]] || return 0
+        local p tmp appid
+        for p in "$PROFILE_DIR"/*.mobileprovision; do
+            [[ -f "$p" ]] || continue
+            tmp="$work/_pf_$(basename "$p").plist"
+            security cms -D -i "$p" > "$tmp" 2>/dev/null || continue
+            appid="$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:application-identifier' "$tmp" 2>/dev/null || true)"
+            # match suffix ".<bid>" so any TEAMID prefix works
+            if [[ "$appid" == *".$bid" ]]; then
+                match="$p"; break
+            fi
+        done
+        if [[ -n "$match" ]]; then
+            cp "$match" "$bundle/embedded.mobileprovision"
+            printf '%s\n' "$bundle/embedded.mobileprovision"
+        else
+            echo "  WARNING: no profile in $PROFILE_DIR matches bundle id '$bid'" >&2
+        fi
     elif [[ -f "$bundle/embedded.mobileprovision" ]]; then
         printf '%s\n' "$bundle/embedded.mobileprovision"
     fi
