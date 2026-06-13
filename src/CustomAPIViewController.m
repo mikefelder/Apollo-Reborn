@@ -52,6 +52,27 @@ static NSInteger ApolloMediaPhysicalRow(NSInteger logicalRow) {
     return logicalRow;
 }
 
+// Canonical (mode-on) row indices within SectionAPIKeys. The Web Session Login
+// row only exists while API-Key-Free Mode is on; with it off, that row is absent
+// and every row at or below it slides up one slot. Mirrors the Media-section
+// mapping above so the API Keys index math lives in one place instead of being
+// inlined at each call site.
+typedef NS_ENUM(NSInteger, ApolloAPIKeyRow) {
+    kAPIKeyRowTroubleshooting = 7,
+    kAPIKeyRowSetupGuide      = 8,
+    kAPIKeyRowWebJSONSwitch   = 9,
+    kAPIKeyRowWebSessionLogin = 10,
+    kAPIKeyRowWidgetSetupCode = 11,
+};
+
+// Map a displayed (visible) API Keys row to its canonical index (ApolloAPIKeyRow).
+static NSInteger ApolloAPIKeyCanonicalRow(NSInteger displayedRow) {
+    if (!sWebJSONEnabled && displayedRow >= kAPIKeyRowWebSessionLogin) {
+        return displayedRow + 1;
+    }
+    return displayedRow;
+}
+
 static BOOL sLinkPreviewModeRefreshPending = NO;
 static NSString *sPendingLinkPreviewModeRefreshArea = nil;
 static NSInteger sPendingLinkPreviewModeRefreshMode = ApolloLinkPreviewModeFull;
@@ -618,8 +639,8 @@ typedef NS_ENUM(NSInteger, Tag) {
     [self apollo_applyTheme];
     // Refresh the Web Session Login status line after returning from the login
     // flow (signed-in user / write-token availability may have just changed).
-    if (sWebJSONEnabled && [self.tableView numberOfRowsInSection:SectionAPIKeys] > 10) {
-        [self.tableView reloadRowsAtIndexPaths:@[[NSIndexPath indexPathForRow:10 inSection:SectionAPIKeys]]
+    if (sWebJSONEnabled && [self.tableView numberOfRowsInSection:SectionAPIKeys] > kAPIKeyRowWebSessionLogin) {
+        [self.tableView reloadRowsAtIndexPaths:@[[NSIndexPath indexPathForRow:kAPIKeyRowWebSessionLogin inSection:SectionAPIKeys]]
                               withRowAnimation:UITableViewRowAnimationNone];
     }
 }
@@ -668,8 +689,10 @@ typedef NS_ENUM(NSInteger, Tag) {
     switch (section) {
         case SectionBackupRestore: return 4;
         // 7 text fields + Can't sign in? + API key setup guide + Web JSON switch + Copy Widget Setup Code
-        // (+ Web Session Login row, only while Web JSON mode is on)
-        case SectionAPIKeys: return sWebJSONEnabled ? 12 : 11;
+        // (+ Web Session Login row, only while Web JSON mode is on). Widget Setup
+        // Code is the last canonical row, so the count is its index + 1, minus the
+        // Web Session Login row when the mode is off.
+        case SectionAPIKeys: return kAPIKeyRowWidgetSetupCode + (sWebJSONEnabled ? 1 : 0);
         case SectionGeneral: return sShowDeletedComments ? 11 : 10;
         case SectionMedia: return 12 + (sEnableInlineImages ? 0 : -kApolloMediaInlineDependentRows);
         case SectionSubreddits: return sSubredditListEnhancements ? 8 : 7;
@@ -902,9 +925,9 @@ typedef NS_ENUM(NSInteger, Tag) {
 
 - (UITableViewCell *)apiKeyCellForRow:(NSInteger)row tableView:(UITableView *)tableView {
     UITableViewCell *cell = nil;
-    // Web Session Login (row 10) only exists while Web JSON mode is on; when it's
-    // off the rows below it slide up one slot, so map back to the canonical index.
-    NSInteger effectiveRow = (!sWebJSONEnabled && row >= 10) ? row + 1 : row;
+    // Web Session Login only exists while Web JSON mode is on; when it's off the
+    // rows below it slide up one slot, so map back to the canonical index.
+    NSInteger effectiveRow = ApolloAPIKeyCanonicalRow(row);
     switch (effectiveRow) {
         case 0:
             cell = [self textFieldCellWithIdentifier:@"Cell_API_Reddit"
@@ -960,7 +983,7 @@ typedef NS_ENUM(NSInteger, Tag) {
                                                 placeholder:defaultUserAgent
                                                        text:sUserAgent
                                                         tag:TagUserAgent];
-        case 7: {
+        case kAPIKeyRowTroubleshooting: {
             UITableViewCell *cell = [self.tableView dequeueReusableCellWithIdentifier:@"Cell_Troubleshooting"];
             if (!cell) {
                 cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"Cell_Troubleshooting"];
@@ -969,7 +992,7 @@ typedef NS_ENUM(NSInteger, Tag) {
             cell.textLabel.text = @"Can't sign in?";
             return cell;
         }
-        case 8: {
+        case kAPIKeyRowSetupGuide: {
             UITableViewCell *cell = [self.tableView dequeueReusableCellWithIdentifier:@"Cell_Instructions"];
             if (!cell) {
                 cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"Cell_Instructions"];
@@ -979,13 +1002,13 @@ typedef NS_ENUM(NSInteger, Tag) {
             cell.textLabel.text = @"Giphy & ImgChest API Key Setup";
             return cell;
         }
-        case 9:
+        case kAPIKeyRowWebJSONSwitch:
             return [self switchCellWithIdentifier:@"Cell_API_WebJSON"
                                             label:@"API-Key-Free Mode (Experimental)"
                                            detail:@"Use Apollo by signing in to reddit.com instead of using API keys (OAuth). Supports browsing, voting, commenting, and saving."
                                                on:sWebJSONEnabled
                                            action:@selector(webJSONSwitchToggled:)];
-        case 10: {
+        case kAPIKeyRowWebSessionLogin: {
             // Subtitle style so we can surface the harvested account / status.
             UITableViewCell *cell = [self.tableView dequeueReusableCellWithIdentifier:@"Cell_API_WebSessionLogin"];
             if (!cell) {
@@ -1004,7 +1027,7 @@ typedef NS_ENUM(NSInteger, Tag) {
             }
             return cell;
         }
-        case 11: {
+        case kAPIKeyRowWidgetSetupCode: {
             UITableViewCell *cell = [self.tableView dequeueReusableCellWithIdentifier:@"Cell_WidgetSetupCode"];
             if (!cell) {
                 cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"Cell_WidgetSetupCode"];
@@ -1583,14 +1606,14 @@ typedef NS_ENUM(NSInteger, Tag) {
             [self promptClearCustomSubredditBannersFromSourceView:cell];
         }
     } else if (indexPath.section == SectionAPIKeys) {
-        NSInteger row = (!sWebJSONEnabled && indexPath.row >= 10) ? indexPath.row + 1 : indexPath.row;
-        if (row == 7) {
+        NSInteger row = ApolloAPIKeyCanonicalRow(indexPath.row);
+        if (row == kAPIKeyRowTroubleshooting) {
             [self pushTroubleshootingViewController];
-        } else if (row == 8) {
+        } else if (row == kAPIKeyRowSetupGuide) {
             [self pushInstructionsViewController];
-        } else if (row == 10) {
+        } else if (row == kAPIKeyRowWebSessionLogin) {
             [self presentWebSessionLoginViewController];
-        } else if (row == 11) {
+        } else if (row == kAPIKeyRowWidgetSetupCode) {
             [self copyWidgetSetupCode];
         }
     } else if (indexPath.section == SectionAbout) {
@@ -1692,8 +1715,9 @@ typedef NS_ENUM(NSInteger, Tag) {
 - (BOOL)tableView:(UITableView *)tableView shouldHighlightRowAtIndexPath:(NSIndexPath *)indexPath {
     if (indexPath.section == SectionBackupRestore) return YES;
     if (indexPath.section == SectionAPIKeys) {
-        NSInteger row = (!sWebJSONEnabled && indexPath.row >= 10) ? indexPath.row + 1 : indexPath.row;
-        if (row == 7 || row == 8 || row == 10 || row == 11) return YES;
+        NSInteger row = ApolloAPIKeyCanonicalRow(indexPath.row);
+        if (row == kAPIKeyRowTroubleshooting || row == kAPIKeyRowSetupGuide ||
+            row == kAPIKeyRowWebSessionLogin || row == kAPIKeyRowWidgetSetupCode) return YES;
     }
     if (indexPath.section == SectionMedia) {
         NSInteger row = ApolloMediaLogicalRow(indexPath.row);
@@ -1992,8 +2016,8 @@ typedef NS_ENUM(NSInteger, Tag) {
     [[NSUserDefaults standardUserDefaults] setBool:sWebJSONEnabled forKey:UDKeyWebJSONEnabled];
     if (sWebJSONEnabled == wasOn) return;
 
-    // The Web Session Login row (logical 10) only exists while the mode is on.
-    NSArray<NSIndexPath *> *loginPaths = @[[NSIndexPath indexPathForRow:10 inSection:SectionAPIKeys]];
+    // The Web Session Login row only exists while the mode is on.
+    NSArray<NSIndexPath *> *loginPaths = @[[NSIndexPath indexPathForRow:kAPIKeyRowWebSessionLogin inSection:SectionAPIKeys]];
     if (sWebJSONEnabled) {
         [self.tableView insertRowsAtIndexPaths:loginPaths withRowAnimation:UITableViewRowAnimationFade];
     } else {

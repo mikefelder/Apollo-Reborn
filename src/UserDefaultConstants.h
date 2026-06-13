@@ -81,8 +81,10 @@ static NSString *const UDKeyTagFilterSubredditOverrides = @"TagFilterSubredditOv
 // Web JSON spike (see ApolloWebJSON.m). Master switch for re-pointing
 // whitelisted listing reads at cookie-authenticated www.reddit.com JSON.
 static NSString *const UDKeyWebJSONEnabled = @"WebJSONEnabled";
-// Harvested "name=value; ..." Cookie header for www.reddit.com requests.
-// Spike-grade storage; a real build would use the keychain.
+// Legacy NSUserDefaults location of the harvested "name=value; ..." Cookie
+// header. The cookie is now stored in the keychain (ApolloWebJSON.m); this key
+// is retained only so ApolloWebJSONLoadPersistedCredentials can migrate an older
+// build's value into the keychain and then delete it.
 static NSString *const UDKeyWebSessionCookieHeader = @"WebSessionCookieHeader";
 
 // Self-hosted notification backend (forked apollo-backend). Empty disables —

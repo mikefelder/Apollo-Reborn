@@ -204,7 +204,18 @@ NSURLRequest *ApolloWebJSONRewriteRequest(NSURLRequest *request) {
         kind = ApolloWebJSONPathAPI;
     } else {
         kind = ApolloWebJSONClassifyReadPath(path);
-        if (kind == ApolloWebJSONPathUnsupported) return nil;
+        if (kind == ApolloWebJSONPathUnsupported) {
+            // The cookie transport doesn't recognize this read, so it falls
+            // through to the oauth host carrying whatever Authorization the
+            // request already has. With real API keys that's the live bearer and
+            // it works; in the keyless escape-hatch case it's the synthetic dummy
+            // bearer the identity layer installed, so Reddit answers 401. Log it
+            // so a stray 401 in the field is traceable to an unclassified path
+            // rather than a transport bug — listings + every /api/* GET are
+            // classified, so this should be rare.
+            ApolloLog(@"[WebJSON] Read path not routable, falling through to oauth: %@ %@", method, path);
+            return nil;
+        }
     }
 
     NSURLComponents *components = [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:NO];
@@ -254,6 +265,15 @@ NSURLRequest *ApolloWebJSONRewriteRequest(NSURLRequest *request) {
 #pragma mark - Session-expiry detection (item 4)
 
 static BOOL sSessionExpiredAnnounced = NO;
+// Consecutive 403 text/html "block page" responses on requests we
+// cookie-authenticated, with no good response in between. A genuinely
+// expired/revoked cookie returns the block page for *every* request, so the
+// streak climbs without resetting; a transient Cloudflare / rate-limit /
+// captcha 403 is interspersed with normal responses that reset the streak. We
+// only declare expiry once the streak crosses the threshold, so a one-off
+// challenge page doesn't fire a spurious "sign in again" prompt.
+static NSUInteger sConsecutiveBlockResponses = 0;
+static const NSUInteger kSessionExpiredBlockThreshold = 3;
 
 void ApolloWebJSONNoteResponse(NSURLRequest *request, NSURLResponse *response) {
     if (!sWebJSONEnabled || sWebSessionCookieHeader.length == 0) return;
@@ -270,16 +290,34 @@ void ApolloWebJSONNoteResponse(NSURLRequest *request, NSURLResponse *response) {
 
     NSHTTPURLResponse *http = (NSHTTPURLResponse *)response;
     // Reddit's anonymous block page is HTTP 403 with a ~190 KB text/html body.
-    // A live cookie session never sees this on a request we authenticated; when
-    // it does, the cookie has expired or been revoked. A 403 with a JSON body
-    // (e.g. a private/quarantined subreddit) is a normal per-content error and
-    // must NOT trip the expiry path — hence the text/html gate.
-    if (http.statusCode != 403) return;
+    // A 403 with a JSON body (e.g. a private/quarantined subreddit) is a normal
+    // per-content error — and proves the cookie still authenticates — so it must
+    // NOT count toward expiry. Hence the text/html gate.
     NSString *contentType = [http.allHeaderFields[@"Content-Type"] lowercaseString] ?: @"";
-    if (![contentType containsString:@"text/html"]) return;
+    BOOL isBlockPage = (http.statusCode == 403) && [contentType containsString:@"text/html"];
+
+    if (!isBlockPage) {
+        // Any non-block response on a cookie-authed request means the session is
+        // still answering us, so clear the streak. This is what keeps a transient
+        // Cloudflare/rate-limit/captcha block page from accumulating toward a
+        // false expiry: a 200 (or even a 403 JSON content error) in between resets
+        // the count.
+        sConsecutiveBlockResponses = 0;
+        return;
+    }
+
+    // Block page seen. Require a short streak with no intervening good response
+    // before declaring the cookie dead, so a single challenge page is tolerated.
+    if (++sConsecutiveBlockResponses < kSessionExpiredBlockThreshold) {
+        ApolloLog(@"[WebJSON] 403 HTML block page (%lu/%lu) for %@ — watching for session expiry",
+                  (unsigned long)sConsecutiveBlockResponses,
+                  (unsigned long)kSessionExpiredBlockThreshold, url.absoluteString);
+        return;
+    }
 
     sSessionExpiredAnnounced = YES;
-    ApolloLog(@"[WebJSON] Session appears expired — 403 HTML block page for %@", url.absoluteString);
+    ApolloLog(@"[WebJSON] Session appears expired — %lu consecutive 403 HTML block pages (latest %@)",
+              (unsigned long)sConsecutiveBlockResponses, url.absoluteString);
     dispatch_async(dispatch_get_main_queue(), ^{
         [[NSNotificationCenter defaultCenter] postNotificationName:ApolloWebJSONSessionExpiredNotification object:nil];
     });
@@ -292,6 +330,7 @@ void ApolloWebJSONSetSessionCookieHeader(NSString *cookieHeader) {
         sWebSessionCookieHeader = [cookieHeader copy];
         // A freshly harvested session is presumed live again.
         sSessionExpiredAnnounced = NO;
+        sConsecutiveBlockResponses = 0;
     } else {
         sWebSessionCookieHeader = nil;
     }
