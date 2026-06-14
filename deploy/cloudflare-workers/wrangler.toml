@@ -1,0 +1,53 @@
+# wrangler.toml — Apollo-Reborn notifications worker
+#
+# Bindings populated by deploy.sh:
+#   - DB: D1 database (created on first run)
+#   - secrets: APPLE_KEY_PEM, APPLE_KEY_ID, REGISTRATION_SECRET
+#     (Reddit OAuth creds are per-account, sent in registration body by the tweak)
+#
+# Free-tier ceilings exercised by this worker:
+#   - Workers: 100k requests/day (overhead negligible at single-user volume)
+#   - D1: 5M reads/day, 100k writes/day, 5 GB storage
+#   - Cron Triggers: unlimited free
+#
+# To deploy: cd to this directory and run ./deploy.sh
+
+name = "apollo-reborn-notifications"
+main = "src/index.ts"
+compatibility_date = "2024-12-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Cron Triggers — poll Reddit for unread messages every minute.
+# Free tier: unlimited; 30s wallclock per invocation.
+[triggers]
+crons = ["*/1 * * * *"]
+
+# Non-secret runtime configuration.
+# Update these to match your bundle ID and Reddit OAuth app's identity.
+[vars]
+APPLE_TEAM_ID = "NE7J4H79L4"
+APPLE_APNS_TOPIC = "com.mikefelder.apollo"
+APPLE_APNS_SANDBOX = "true"
+# Reddit's API explicitly rejects User-Agent strings without "(by /u/<name>)".
+# This is OS-style: "ios:bundle.id:vX.Y.Z (by /u/your-reddit-name)".
+REDDIT_USER_AGENT = "ios:com.mikefelder.apollo:v1.0 (by /u/mikefelder)"
+# Max accounts polled per cron tick to stay under the 30s wallclock budget.
+# Single-user deployments don't need to raise this.
+POLL_MAX_ACCOUNTS = "10"
+# How long ago a seen_messages row must be before cleanup deletes it.
+# 30 days * 86400s = 2592000.
+SEEN_TTL_SECONDS = "2592000"
+
+# D1 database binding. The database itself is created on first deploy.sh run;
+# the placeholders below are overwritten by deploy.sh (it edits wrangler.toml
+# in place via `wrangler d1 create --output=json`).
+[[d1_databases]]
+binding = "DB"
+database_name = "apollo-reborn-notifications"
+database_id = "REPLACE_ME_DURING_DEPLOY"
+
+# Observability — turn on the worker's built-in logs panel so `wrangler tail`
+# shows trace events without needing an external destination.
+[observability]
+enabled = true
+head_sampling_rate = 1.0
