@@ -1,0 +1,22 @@
+# Never commit secrets or generated state from this directory.
+*.p8
+*.pem
+*.env
+.env*
+secrets/
+state/
+*.log
+
+# Terraform state — contains every generated secret (PG password, registration
+# token, full APNs key, Reddit OAuth creds) in plaintext.
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+.terraform/
+# .terraform.lock.hcl is intentionally NOT ignored — commit it for reproducible
+# provider versions across machines (Terraform best practice).
+terraform.tfvars
+*.auto.tfvars
+crash.log
+crash.*.log
+tfplan
